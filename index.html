@@ -1,0 +1,127 @@
+<!--
+   BnS custom profile picture tool
+   Copyright (C) 2016 Farnham
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+-->
+
+<script type="text/javascript" src="http://code.jquery.com/jquery-latest.js"></script>
+<script type="text/javascript" src="js/piexif.js"></script>
+<script type="text/javascript" src="js/md5.js"></script>
+<script type="text/javascript" src="js/rc4.js"></script>
+
+Valid image:
+<input type="file" id="valid"/>
+<br/>
+Custom image:
+<input type="file" id="custom"/>
+<br/>
+<input type="button" value="Submit" onclick="process()"/>
+
+<script>
+// Convert a hex string to a byte array
+function hexToBytes(hex) {
+    for (var bytes = [], c = 0; c < hex.length; c += 2)
+    bytes.push(parseInt(hex.substr(c, 2), 16));
+    return bytes;
+}
+
+// Convert a byte array to a hex string
+function bytesToHex(bytes) {
+    for (var hex = [], i = 0; i < bytes.length; i++) {
+        hex.push((bytes.charCodeAt(i) >>> 4).toString(16));
+        hex.push((bytes.charCodeAt(i) & 0xF).toString(16));
+    }
+    return hex.join("");
+}
+
+function UpdateChecksum(pic, data) {
+    var string = ""
+    for (var i = 0; i < data.length; ++i) {
+        string += String.fromCharCode(data[i])
+    }
+
+    // Get raw bytes from picture
+    pic = atob(pic.replace(/data:image\/jpeg;base64,/, ""))
+    // Find start of image header
+    for (var i = 0; i + 1 < pic.length; ++i) {
+        if (pic.charCodeAt(i) == 0xFF && pic.charCodeAt(i + 1) == 0xDB) {
+            pic = pic.slice(i, pic.length)
+            break
+        }
+    }
+
+    // Locate checksum2 in data
+    var regexp =  new RegExp("(<checksum2>[0-9a-f]{32}</checksum2>)")
+    var match = regexp.exec(string)
+
+    // Recalculate checksum2 with new image
+    string = string.replace(match[1], "<checksum2>" + bytesToHex(rc4("bns_gamepic", hexToBytes(md5(pic)))) + "</checksum2>")
+
+    for (var i = 0; i < data.length; ++i) {
+        data[i] = string.charCodeAt(i)
+    }
+
+    return data
+}
+
+function process() {
+    var valid = document.getElementById('valid').files[0]
+    var custom = document.getElementById('custom').files[0]
+
+    var readerValid = new FileReader()
+    readerValid.onloadend = function(e) {
+        // Get exif data from valid image
+        var exif = piexif.load(e.target.result)
+
+        var readerCustom = new FileReader()
+        readerCustom.onloadend = function(e) {
+            // Do some validation of custom image
+            var image = new Image()
+            image.onload = function() {
+                // Maybe we should use dimensions from valid image? Too much code...
+                if (image.width != 378 || image.height != 620) {
+                    // With wrong dimensions custom picture can:
+                    // 1) Be detected automatically by system
+                    // 2) Cause too long profile load times for people with slow connections (you don't need full HD image in that small box)
+                    // 3) Look horrible due to wrong aspect ratio
+                    alert("Custom image dimensions are " + image.width + " x " + image.height + ", expected 378 x 620")
+                    return
+                }
+
+                // Remove exif data from custom image (if present)
+                var result
+                try {
+                    result = piexif.remove(e.target.result)
+                // "Exif not found."
+                } catch (err) {
+                    result = e.target.result
+                }
+
+                // Update checksum2 xml field to match custom image
+                exif["Exif"][700] = UpdateChecksum(result, exif["Exif"][700])
+
+                // Insert new exif data
+                result = piexif.insert(piexif.dump(exif), result)
+
+                // FIXME: More user-friendly download?
+                window.open(result)
+            }
+            image.src = e.target.result
+        }
+        readerCustom.readAsDataURL(custom);
+    };
+    readerValid.readAsDataURL(valid);
+}
+</script>
